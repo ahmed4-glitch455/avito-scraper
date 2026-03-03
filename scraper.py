@@ -1,6 +1,5 @@
 import asyncio
 import os
-import datetime
 import requests
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -11,100 +10,78 @@ load_dotenv()
 # --- CONFIGURATION ---
 TELEGRAM_API = os.getenv("TELEGRAM_API")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BASE_URL = "https://www.avito.ma/fr/maroc/voitures_d_occasion-%C3%A0_vendre?price=-60000"
-MAX_PAGES = 30 
+# Votre lien exemple
+URL_EXEMPLE = "https://www.avito.ma/fr/bourgogne/voitures_d_occasion/Mercedes_classe_E_220_56088631.htm"
 
-def send_telegram_page(data, page_number):
-    """Formate et envoie les données d'une seule page sur Telegram."""
-    if not data:
-        return
-    
-    date_str = datetime.datetime.now().strftime("%H:%M")
-    header = f"📄 *Avito Page {page_number}/30* ({date_str})\n"
-    header += "```\n"
-    header += f"{'Modèle':<18} | {'Prix':<10}\n"
-    header += "-" * 31 + "\n"
-    
-    body = ""
-    for car in data:
-        body += f"{car['name']:<18} | {car['price']:<10}\n"
-    
-    footer = "```"
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": header + body + footer,
-        "parse_mode": "Markdown"
-    }
-    
-    try:
-        response = requests.post(url, data=payload, timeout=10)
-        if response.status_code != 200:
-            print(f"Erreur Telegram Page {page_number}: {response.text}")
-    except Exception as e:
-        print(f"Erreur envoi Telegram: {e}")
-
-async def scrape_and_send():
+async def scrape_details_voiture(url):
     async with async_playwright() as p:
-        # Lancement du navigateur avec des options de discrétion
         browser = await p.chromium.launch(headless=True)
-        
-        # On définit un User-Agent fixe pour tout le navigateur
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
+        page = await context.new_page()
 
-        for i in range(1, MAX_PAGES + 1):
-            page_data = []
-            url = f"{BASE_URL}&o={i}"
+        try:
+            print(f"Analyse de l'annonce : {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # On laisse 3 secondes pour que le JavaScript affiche le prix
+            await asyncio.sleep(3)
             
-            tab = await context.new_page()
-            print(f"Analyse de la page {i}...")
+            content = await page.content()
+            soup = BeautifulSoup(content, 'html.parser')
 
-            try:
-                # On attend que la page soit chargée
-                await tab.goto(url, wait_until="domcontentloaded", timeout=60000)
-                
-                # Attente visuelle des annonces
-                await tab.wait_for_selector('div[data-testid="ad-card"]', timeout=15000)
-                
-                content = await tab.content()
-                soup = BeautifulSoup(content, 'html.parser')
-                annonces = soup.find_all('div', {'data-testid': 'ad-card'})
+            # 1. Extraction du Titre
+            titre = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Sans titre"
 
-                for ad in annonces:
-                    try:
-                        name = ad.find('p', class_=lambda x: x and 'heading' in x.lower()).get_text(strip=True)
-                        price = ad.find('p', class_=lambda x: x and 'price' in x.lower()).get_text(strip=True)
-                        
-                        price_clean = price.replace(" DH", "").replace(" ", "")
-                        page_data.append({"name": name[:18], "price": price_clean})
-                    except:
-                        continue
+            # 2. Extraction du Prix (Balise spécifique sur la page détail)
+            # Souvent un <p> ou <span> avec une classe contenant 'price'
+            prix_tag = soup.find(lambda tag: tag.name in ['p', 'span', 'h2'] and 'price' in str(tag.get('class', [])).lower())
+            prix = prix_tag.get_text(strip=True) if prix_tag else "Prix non affiché"
 
-                # ENVOI IMMÉDIAT de la page
-                if page_data:
-                    send_telegram_page(page_data, i)
-                    print(f"Page {i} envoyée avec succès.")
-                else:
-                    print(f"Page {i} vide ou bloquée.")
-
-            except Exception as e:
-                print(f"Erreur sur la page {i}: {e}")
+            # 3. Extraction des caractéristiques (Année, Kilométrage, etc.)
+            # Avito utilise souvent une liste d'ol/ul ou des div pour les caractéristiques
+            infos = {}
+            caracs = soup.find_all('div', class_=lambda x: x and 'sc-1g3sn3w' in x) # Classe typique des infos
             
-            finally:
-                await tab.close() # Ferme l'onglet pour libérer la RAM
+            for item in soup.find_all('li'): # On cherche dans les listes de la page
+                text = item.get_text(strip=True)
+                if "Année" in text: infos['Année'] = text.replace("Année-Modèle", "").strip()
+                if "Kilométrage" in text: infos['KM'] = text.replace("Kilométrage", "").strip()
+                if "Secteur" in text: infos['Ville'] = text.replace("Secteur", "").strip()
 
-            # Pause entre les pages pour éviter d'être banni
-            await asyncio.sleep(2)
+            return {
+                "titre": titre,
+                "prix": prix,
+                "ville": infos.get('Ville', 'N/C'),
+                "annee": infos.get('Année', 'N/C'),
+                "km": infos.get('KM', 'N/C')
+            }
 
-        await browser.close()
+        except Exception as e:
+            print(f"Erreur : {e}")
+            return None
+        finally:
+            await browser.close()
+
+def envoyer_telegram(data):
+    if not data: return
+    
+    msg = f"✨ *Nouvelle Opportunité trouvée !*\n\n"
+    msg += f"🚘 *Modèle :* {data['titre']}\n"
+    msg += f"💰 *Prix :* {data['prix']}\n"
+    msg += f"📍 *Ville :* {data['ville']}\n"
+    msg += f"📅 *Année :* {data['annee']}\n"
+    msg += f"🛣️ *KM :* {data['km']}\n\n"
+    msg += f"[Voir l'annonce sur Avito]({URL_EXEMPLE})"
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_API}/sendMessage"
+    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+
+async def main():
+    resultat = await scrape_details_voiture(URL_EXEMPLE)
+    if resultat:
+        envoyer_telegram(resultat)
+        print("Détails envoyés sur Telegram !")
 
 if __name__ == "__main__":
-    if not TELEGRAM_API or not TELEGRAM_CHAT_ID:
-        print("ERREUR: Token ou Chat ID manquant dans les secrets GitHub !")
-    else:
-        asyncio.run(scrape_and_send())
-
-
+    asyncio.run(main())
