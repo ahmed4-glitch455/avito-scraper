@@ -8,23 +8,35 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_API")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BASE_URL = "https://www.avito.ma/fr/maroc/voitures_d_occasion-%C3%A0_vendre?price=-60000"
+# Nouvelle URL de base sans filtre de prix
+BASE_URL = "https://www.avito.ma/fr/maroc/voitures_d_occasion-%C3%A0_vendre"
 MAX_PAGES = 30 
 
 def send_telegram_page(data, page_number):
-    if not data: return
+    """Envoie les résultats d'une page sur Telegram."""
+    if not data:
+        return
+    
     date_str = datetime.datetime.now().strftime("%H:%M")
-    header = f"🚗 *Avito Page {page_number}/30* ({date_str})\n"
+    header = f"🚗 *Avito Page {page_number}/{MAX_PAGES}* ({date_str})\n"
     header += "```\n"
     header += f"{'Modèle':<18} | {'Prix':<10}\n"
     header += "-" * 31 + "\n"
-    # On limite à 15 voitures par message pour éviter de bloquer Telegram
-    body = "".join([f"{car['name']:<18} | {car['price']:<10}\n" for car in data[:15]])
+    
+    body = ""
+    for car in data[:20]: # Limite à 20 pour la clarté du message
+        body += f"{car['name']:<18} | {car['price']:<10}\n"
+    
     msg = header + body + "```"
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+    try:
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+    except Exception as e:
+        print(f"Erreur envoi Telegram : {e}")
 
 async def scrape_avito():
     async with async_playwright() as p:
@@ -34,64 +46,77 @@ async def scrape_avito():
         )
 
         for i in range(1, MAX_PAGES + 1):
-            url = f"{BASE_URL}&o={i}"
+            # Rectification de la logique d'URL
+            if i == 1:
+                url = BASE_URL
+            else:
+                url = f"{BASE_URL}?o={i}"
+            
             page = await context.new_page()
             page_data = []
 
             try:
-                print(f"Analyse Page {i}...")
+                print(f"Analyse Page {i} : {url}")
                 await page.goto(url, wait_until="networkidle", timeout=60000)
                 
-                # On scrolle un peu pour charger le contenu
+                # Scroll pour déclencher le chargement des données
                 await page.mouse.wheel(0, 2000)
                 await asyncio.sleep(5)
 
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
                 
-                # --- NOUVELLE STRATÉGIE ---
-                # On cherche TOUS les éléments <p> ou <span> qui contiennent "DH"
+                # Stratégie de recherche par texte "DH" pour contourner les blocages de balises
                 elements_prix = soup.find_all(lambda tag: tag.name in ['p', 'span', 'h3'] and 'DH' in tag.text)
                 
+                print(f"Éléments 'DH' trouvés sur la page {i} : {len(elements_prix)}")
+
                 for el in elements_prix:
                     prix_text = el.get_text(strip=True)
-                    # On vérifie que c'est bien un prix (chiffres + DH)
-                    if any(char.isdigit() for char in prix_text) and len(prix_text) < 20:
+                    # Validation du format prix
+                    if any(char.isdigit() for char in prix_text) and len(prix_text) < 25:
                         
-                        # Pour chaque prix trouvé, on cherche le titre le plus proche (souvent juste au-dessus)
-                        # On remonte un peu dans le code HTML pour trouver un texte de titre
+                        # Recherche du titre le plus proche
                         parent = el.find_parent('div')
                         if parent:
-                            # On cherche le premier texte qui n'est pas le prix
-                            titre_tag = parent.find(['h2', 'h3', 'p'])
+                            # On cherche un titre dans le même bloc
+                            titre_tag = parent.find(['h2', 'h3', 'p', 'span'], class_=lambda x: x and ('title' in x.lower() or 'heading' in x.lower()))
+                            if not titre_tag:
+                                titre_tag = parent.find(['h2', 'h3']) # Backup sur les titres standards
+                            
                             if titre_tag:
                                 titre = titre_tag.get_text(strip=True)[:18]
+                                # On évite de prendre le prix comme titre
                                 if titre and "DH" not in titre:
                                     price_clean = prix_text.replace("DH", "").replace(" ", "").strip()
                                     page_data.append({"name": titre, "price": price_clean})
 
-                # Nettoyage des doublons
-                seen = set()
+                # Suppression des doublons
                 final_data = []
-                for d in page_data:
-                    if d['name'] not in seen:
-                        final_data.append(d)
-                        seen.add(d['name'])
+                seen_names = set()
+                for car in page_data:
+                    if car['name'] not in seen_names:
+                        final_data.append(car)
+                        seen_names.add(car['name'])
 
                 if final_data:
                     send_telegram_page(final_data, i)
-                    print(f"✅ Page {i} : {len(final_data)} voitures envoyées.")
+                    print(f"✅ Page {i} envoyée ({len(final_data)} annonces).")
                 else:
-                    # Si toujours vide, on affiche le texte de la page pour comprendre (dans les logs)
-                    print(f"❌ Page {i} toujours vide. Nombre d'éléments DH trouvés: {len(elements_prix)}")
+                    print(f"❌ Page {i} : Aucune annonce extraite.")
 
             except Exception as e:
-                print(f"Erreur Page {i}: {e}")
+                print(f"Erreur sur la page {i}: {e}")
             finally:
                 await page.close()
-            await asyncio.sleep(2)
+            
+            # Pause de sécurité pour ne pas être banni
+            await asyncio.sleep(3)
 
         await browser.close()
 
 if __name__ == "__main__":
-    asyncio.run(scrape_avito())
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        asyncio.run(scrape_avito())
+    else:
+        print("Erreur : Les secrets TELEGRAM_API ou TELEGRAM_CHAT_ID ne sont pas configurés.")
