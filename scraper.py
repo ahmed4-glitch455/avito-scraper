@@ -60,10 +60,10 @@ async def scrape_avito():
                 print(f"Analyse Page {i}...")
                 await page.goto(url, wait_until="load", timeout=60000)
                 
-                # Scroll par paliers pour charger les données
-                for _ in range(5):
-                    await page.mouse.wheel(0, 900)
-                    await asyncio.sleep(1.2)
+                # Scroll plus lent et plus long pour forcer l'affichage de la ville
+                for _ in range(6):
+                    await page.mouse.wheel(0, 800)
+                    await asyncio.sleep(1)
 
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
@@ -81,34 +81,36 @@ async def scrape_avito():
                             name = title_tag.get_text(strip=True)
                             price = format_price(price_tag.get_text(strip=True))
                             
-                            # On récupère tous les petits textes (badges)
-                            badges = ad.find_all(['span', 'p'], class_='dGUnYf')
+                            # On récupère TOUS les textes dans l'annonce
+                            badges = ad.find_all(['span', 'p'])
+                            all_texts = [b.get_text(strip=True) for b in badges if b.get_text(strip=True)]
                             
-                            ville = "Maroc"
+                            ville = "Maroc" # Valeur par défaut plus propre que "Non spécifiée"
                             annee = extract_year_from_text(name) or "N/C"
                             autres = []
                             candidates_ville = []
 
-                            for b in badges:
-                                # On extrait le texte en ignorant les balises enfants (comme les icônes SVG/Arrow)
-                                text = b.get_text(strip=True, separator=' ')
-                                # Nettoyage des résidus d'icônes
-                                text = re.sub(r'(Downward|Upward|Arrow|Icon|Camera)\s?\d?/?\d?', '', text).strip()
-                                
+                            for text in all_texts:
                                 lower_text = text.lower()
-                                if not text or "dh" in lower_text or "/mois" in lower_text:
+                                
+                                # Ignorer les prix et crédits
+                                if "dh" in lower_text or "/mois" in lower_text:
                                     continue
                                 
+                                # Détecter l'année
                                 if re.match(r"^(19|20)\d{2}$", text):
                                     annee = text
+                                # Détecter les infos techniques
                                 elif any(x in lower_text for x in ['km', 'diesel', 'essence', 'manuel', 'auto', 'cv']):
-                                    if text not in autres: autres.append(text)
+                                    if text not in autres: 
+                                        autres.append(text)
+                                # Collecter les candidats pour la ville (Texte pur sans chiffres)
                                 elif len(text) > 2 and not any(char.isdigit() for char in text):
-                                    if lower_text not in ["neuf", "plus d'infos"]:
+                                    if lower_text not in ["plus d'infos", "voir l'annonce", "neuf"]:
                                         candidates_ville.append(text)
 
+                            # La ville est très souvent le DERNIER élément de texte pur dans l'annonce
                             if candidates_ville:
-                                # La ville est généralement le dernier candidat après nettoyage
                                 ville = candidates_ville[-1]
 
                             if any(char.isdigit() for char in price):
