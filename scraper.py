@@ -1,89 +1,91 @@
 import asyncio
 import os
 import requests
+import sys
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 load_dotenv()
 
-TELEGRAM_API = os.getenv("TELEGRAM_TOKEN")
+# --- CONFIGURATION ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_API")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 URL_EXEMPLE = "https://www.avito.ma/fr/bourgogne/voitures_d_occasion/Mercedes_classe_E_220_56088631.htm"
 
-async def scrape_details_voiture(url):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        # On simule un écran large pour forcer l'affichage des infos
-        context = await browser.new_context(viewport={'width': 1920, 'height': 1080})
-        page = await context.new_page()
+def envoyer_telegram(data):
+    """Envoi avec vérification d'erreur explicite."""
+    print("Tentative d'envoi vers Telegram...")
+    msg = (f"🚀 *Test Réussi !*\n\n"
+           f"🚘 *Modèle :* {data['titre']}\n"
+           f"💰 *Prix :* {data['prix']}\n"
+           f"📍 *Ville :* {data['ville']}\n\n"
+           f"[Lien]({URL_EXEMPLE})")
 
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        res = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=15)
+        if res.status_code == 200:
+            print("✅ Message envoyé avec succès !")
+        else:
+            print(f"❌ Erreur Telegram ({res.status_code}): {res.text}")
+    except Exception as e:
+        print(f"❌ Erreur réseau lors de l'envoi : {e}")
+
+async def scrape():
+    async with async_playwright() as p:
+        print("Lancement du navigateur...")
+        # Lancement avec des options pour passer sous les radars
+        browser = await p.chromium.launch(headless=True)
+        
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={'width': 1280, 'height': 800}
+        )
+        
+        page = await context.new_page()
+        
         try:
-            print(f"Analyse en cours...")
-            await page.goto(url, wait_until="networkidle", timeout=60000)
+            print(f"Navigation vers : {URL_EXEMPLE}")
+            # On utilise 'load' au lieu de 'networkidle' pour éviter d'attendre indéfiniment
+            await page.goto(URL_EXEMPLE, wait_until="load", timeout=60000)
             
-            # On attend 5 secondes pour être SÛR que le prix et les détails sont affichés
+            print("Page chargée. Attente de 5s pour le contenu dynamique...")
             await asyncio.sleep(5)
             
+            # Prendre une capture d'écran (pour déboguer si besoin dans les logs GitHub)
+            # await page.screenshot(path="debug.png") 
+
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
 
-            # 1. Extraction du Titre
-            titre = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Sans titre"
+            # Extraction simplifiée
+            titre = soup.find('h1').get_text(strip=True) if soup.find('h1') else "Titre introuvable"
+            print(f"Titre trouvé : {titre}")
 
-            # 2. Extraction du Prix (Recherche par texte contenant "DH")
-            prix = "Prix non affiché"
-            # On cherche tous les éléments qui pourraient contenir le prix
-            for p_tag in soup.find_all(['p', 'h2', 'span']):
-                txt = p_tag.get_text(strip=True)
-                if "DH" in txt and any(char.isdigit() for char in txt):
+            prix = "N/A"
+            for tag in soup.find_all(['p', 'h2', 'span', 'div']):
+                txt = tag.get_text(strip=True)
+                if "DH" in txt and any(c.isdigit() for c in txt) and len(txt) < 20:
                     prix = txt
                     break
-
-            # 3. Extraction des détails (Année, KM, Ville)
-            # On cherche dans toute la page les textes qui contiennent nos mots-clés
-            infos = {"Ville": "N/C", "Année": "N/C", "KM": "N/C"}
             
-            for span in soup.find_all(['span', 'p', 'li']):
-                text = span.get_text(strip=True)
-                if "Année-Modèle" in text:
-                    # On essaie de prendre le texte juste après ou à l'intérieur
-                    infos["Année"] = text.replace("Année-Modèle", "").strip()
-                elif "Kilométrage" in text:
-                    infos["KM"] = text.replace("Kilométrage", "").strip()
-                elif "Secteur" in text:
-                    infos["Ville"] = text.replace("Secteur", "").strip()
+            ville = "N/A"
+            for span in soup.find_all('span'):
+                if "Secteur" in span.get_text():
+                    ville = span.get_text().replace("Secteur", "").strip()
 
-            return {
-                "titre": titre,
-                "prix": prix,
-                "ville": infos["Ville"],
-                "annee": infos["Année"],
-                "km": infos["KM"]
-            }
+            data = {"titre": titre, "prix": prix, "ville": ville}
+            envoyer_telegram(data)
 
         except Exception as e:
-            print(f"Erreur : {e}")
-            return None
+            print(f"💥 ERREUR pendant le scraping : {e}")
         finally:
             await browser.close()
-
-def envoyer_telegram(data):
-    msg = (f"✨ *Analyse Réussie !*\n\n"
-           f"🚘 *Modèle :* {data['titre']}\n"
-           f"💰 *Prix :* {data['prix']}\n"
-           f"📍 *Ville :* {data['ville']}\n"
-           f"📅 *Année :* {data['annee']}\n"
-           f"🛣️ *KM :* {data['km']}\n\n"
-           f"[Ouvrir l'annonce]({URL_EXEMPLE})")
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_API}/sendMessage"
-    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-
-async def main():
-    resultat = await scrape_details_voiture(URL_EXEMPLE)
-    if resultat:
-        envoyer_telegram(resultat)
+            print("Navigateur fermé.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if not TELEGRAM_API or not TELEGRAM_CHAT_ID:
+        print("❌ ERREUR : Les variables TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID sont vides !")
+        sys.exit(1)
+    asyncio.run(scrape())
