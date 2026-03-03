@@ -102,7 +102,7 @@ async def scrape_and_send():
         await browser.close()
 
 if __name__ == "__main__":
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_API or not TELEGRAM_CHAT_ID:
         print("ERREUR: Token ou Chat ID manquant dans les secrets GitHub !")
     else:
         asyncio.run(scrape_and_send())
