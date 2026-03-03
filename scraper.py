@@ -2,6 +2,7 @@ import asyncio
 import os
 import datetime
 import requests
+import re
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -21,31 +22,57 @@ def format_price(price_str):
     except:
         return digits
 
-def clean_details(details_list):
-    cleaned = []
-    banned = ["icon", "camera", "mois", "dh", "/", "1/", "2/", "3/"]
+def parse_car_details(details_list):
+    """Sépare intelligemment la ville, l'année et le reste."""
+    res = {"ville": "Maroc", "annee": "N/C", "autres": []}
+    banned = ["icon", "camera", "mois", "dh", "/", "1/", "2/"]
+    
     for item in details_list:
-        val = item.lower().strip()
-        if val not in [c.lower() for c in cleaned]:
-            if not any(b in val for b in banned) and len(val) > 1:
-                cleaned.append(item.strip())
-    return " | ".join(cleaned)
+        val = item.strip()
+        val_lower = val.lower()
+        
+        if any(b in val_lower for b in banned) or len(val) < 2:
+            continue
+            
+        # Détection de l'année (4 chiffres consécutifs commençant par 19 ou 20)
+        if re.match(r"^(19|20)\d{2}$", val):
+            res["annee"] = val
+        # Détection de la ville (souvent les derniers éléments, ou via une liste si besoin)
+        # Ici on prend le dernier élément non-numérique comme ville probable
+        elif not any(char.isdigit() for char in val):
+            res["ville"] = val
+        else:
+            if val not in res["autres"]:
+                res["autres"].append(val)
+                
+    res["autres_str"] = " | ".join(res["autres"])
+    return res
 
 def send_telegram_page(data, page_number):
     if not data: return
     date_str = datetime.datetime.now().strftime("%H:%M")
-    msg = f"🚗 *AVITO - PAGE {page_number}/{MAX_PAGES}*\n"
-    msg += "─" * 20 + "\n\n"
     
-    for car in data[:8]: # On réduit à 8 pour ne pas faire de trop longs messages
-        msg += f"🚘 *{car['name']}*\n"
-        msg += f"💰 *{car['price']} DH*\n"
-        msg += f"📍 _{car['details']}_\n"
-        msg += f"🔗 [Voir l'annonce]({car['url']})\n" # LIEN DE VÉRIFICATION
+    msg = f"✨ *AVITO - SÉLECTION PAGE {page_number}* ✨\n"
+    msg += "📅 " + date_str + "\n"
+    msg += "=" * 25 + "\n\n"
+    
+    for car in data[:8]:
+        msg += f"🚘 *NOM :* {car['name']}\n"
+        msg += f"💰 *PRIX :* {car['price']} DH\n"
+        msg += f"📍 *VILLE :* {car['info']['ville']}\n"
+        msg += f"📅 *MODÈLE :* {car['info']['annee']}\n"
+        if car['info']['autres_str']:
+            msg += f"⚙️ *INFOS :* {car['info']['autres_str']}\n"
+        msg += f"🔗 [Ouvrir l'annonce sur Avito]({car['url']})\n"
         msg += "─" * 15 + "\n"
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown", "disable_web_page_preview": True})
+    requests.post(url, data={
+        "chat_id": TELEGRAM_CHAT_ID, 
+        "text": msg, 
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    })
 
 async def scrape_avito():
     async with async_playwright() as p:
@@ -65,12 +92,10 @@ async def scrape_avito():
 
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
-                # Chaque 'ad' est une boîte isolée (un lien <a>)
                 annonces = soup.find_all('a', href=True)
 
                 for ad in annonces:
                     href = ad.get('href', '')
-                    # On vérifie que c'est bien un lien d'annonce voiture
                     if "/vi/" in href or ".htm" in href:
                         full_url = href if href.startswith("http") else "https://www.avito.ma" + href
                         
@@ -78,25 +103,29 @@ async def scrape_avito():
                         price_tag = ad.find(['p', 'span'], class_=['dJAfqm', 'hsBiLW'])
                         
                         if title_tag and price_tag:
-                            name = title_tag.get_text(strip=True)[:25]
+                            name = title_tag.get_text(strip=True)[:30]
                             price = format_price(price_tag.get_text(strip=True))
                             
+                            # Extraction des badges de détails
                             detail_tags = ad.find_all(['span', 'p'], class_='dGUnYf')
                             raw_details = [t.get_text(strip=True) for t in detail_tags]
-                            details = clean_details(raw_details)
+                            
+                            # Traitement intelligent des infos
+                            info_traitee = parse_car_details(raw_details)
 
                             if any(char.isdigit() for char in price):
                                 page_data.append({
                                     "name": name, 
                                     "price": price, 
-                                    "details": details,
+                                    "info": info_traitee,
                                     "url": full_url
                                 })
 
                 if page_data:
-                    unique = list({v['url']:v for v in page_data}.values()) # Unicité par URL
+                    # Unicité par URL pour éviter les doublons
+                    unique = list({v['url']:v for v in page_data}.values())
                     send_telegram_page(unique, i)
-                    print(f"✅ Page {i} envoyée avec liens.")
+                    print(f"✅ Page {i} envoyée proprement.")
 
             except Exception as e:
                 print(f"Erreur Page {i}: {e}")
