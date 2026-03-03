@@ -60,10 +60,10 @@ async def scrape_avito():
                 print(f"Analyse Page {i}...")
                 await page.goto(url, wait_until="load", timeout=60000)
                 
-                # --- SCROLL HUMAIN PAS À PAS ---
-                for _ in range(5):
-                    await page.mouse.wheel(0, 800)
-                    await asyncio.sleep(1)
+                # Scroll par paliers pour charger les données dynamiques
+                for _ in range(4):
+                    await page.mouse.wheel(0, 1000)
+                    await asyncio.sleep(1.5)
 
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
@@ -81,24 +81,31 @@ async def scrape_avito():
                             name = title_tag.get_text(strip=True)
                             price = format_price(price_tag.get_text(strip=True))
                             
-                            # On récupère TOUS les textes courts dans l'annonce pour ne rien rater
-                            all_texts = [t.get_text(strip=True) for t in ad.find_all(['span', 'p']) if 2 < len(t.get_text(strip=True)) < 40]
+                            # Récupération de tous les badges (span de classe dGUnYf)
+                            badges = ad.find_all(['span', 'p'], class_='dGUnYf')
+                            all_texts = [b.get_text(strip=True) for b in badges if b.get_text(strip=True)]
                             
                             ville = "Non spécifiée"
-                            annee = extract_year_from_text(name) or "N/C" # Secours : cherche l'année dans le titre
+                            annee = extract_year_from_text(name) or "N/C"
                             autres = []
 
                             for text in all_texts:
-                                # Année (si pas déjà trouvée dans le titre)
-                                if annee == "N/C" and re.match(r"^(19|20)\d{2}$", text):
+                                lower_text = text.lower()
+                                
+                                # 1. Exclusion des termes liés au prix pour la Ville
+                                if "dh" in lower_text or "/mois" in lower_text or any(c.isdigit() for c in text.replace(" ","")) and len(text) > 4 and "km" not in lower_text:
+                                    continue
+                                
+                                # 2. Identification de l'Année
+                                if re.match(r"^(19|20)\d{2}$", text):
                                     annee = text
-                                # Mots clés techniques
-                                elif any(x in text.lower() for x in ['km', 'diesel', 'essence', 'manuel', 'auto', 'cv']):
-                                    if text not in autres and "DH" not in text:
+                                # 3. Identification des Infos techniques
+                                elif any(x in lower_text for x in ['km', 'diesel', 'essence', 'manuel', 'auto', 'cv']):
+                                    if text not in autres: 
                                         autres.append(text)
-                                # Ville (souvent un texte simple sans chiffres)
-                                elif not any(char.isdigit() for char in text) and len(text) > 3:
-                                    if text.lower() not in ["plus d'infos", "voir l'annonce"]:
+                                # 4. Identification de la Ville (par élimination propre)
+                                elif len(text) > 2 and not any(char.isdigit() for char in text):
+                                    if lower_text not in ["plus d'infos", "voir l'annonce"]:
                                         ville = text
 
                             if any(char.isdigit() for char in price):
