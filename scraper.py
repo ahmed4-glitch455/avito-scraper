@@ -22,6 +22,10 @@ def format_price(price_str):
     except:
         return digits
 
+def extract_year_from_text(text):
+    match = re.search(r"(19|20)\d{2}", text)
+    return match.group(0) if match else None
+
 def send_telegram_page(data, page_number):
     if not data: return
     date_str = datetime.datetime.now().strftime("%H:%M")
@@ -54,9 +58,12 @@ async def scrape_avito():
 
             try:
                 print(f"Analyse Page {i}...")
-                await page.goto(url, wait_until="networkidle", timeout=60000)
-                await page.mouse.wheel(0, 4000)
-                await asyncio.sleep(6) # Un peu plus de temps pour charger les icônes
+                await page.goto(url, wait_until="load", timeout=60000)
+                
+                # --- SCROLL HUMAIN PAS À PAS ---
+                for _ in range(5):
+                    await page.mouse.wheel(0, 800)
+                    await asyncio.sleep(1)
 
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
@@ -67,37 +74,36 @@ async def scrape_avito():
                     if "/vi/" in href or ".htm" in href:
                         full_url = href if href.startswith("http") else "https://www.avito.ma" + href
                         
-                        # Extraction Nom et Prix
                         title_tag = ad.find(['h3', 'p', 'span'], class_='iHApav') or ad.find('h3')
                         price_tag = ad.find(['p', 'span'], class_=['dJAfqm', 'hsBiLW'])
                         
                         if title_tag and price_tag:
-                            name = title_tag.get_text(strip=True)[:30]
+                            name = title_tag.get_text(strip=True)
                             price = format_price(price_tag.get_text(strip=True))
                             
-                            # --- NOUVELLE LOGIQUE DE DÉTAILS ---
-                            # On récupère tous les petits textes
-                            badges = ad.find_all(['span', 'p'], class_='dGUnYf')
-                            text_list = [b.get_text(strip=True) for b in badges if b.get_text(strip=True)]
+                            # On récupère TOUS les textes courts dans l'annonce pour ne rien rater
+                            all_texts = [t.get_text(strip=True) for t in ad.find_all(['span', 'p']) if 2 < len(t.get_text(strip=True)) < 40]
                             
                             ville = "Non spécifiée"
-                            annee = "N/C"
+                            annee = extract_year_from_text(name) or "N/C" # Secours : cherche l'année dans le titre
                             autres = []
 
-                            for text in text_list:
-                                # Si c'est 4 chiffres, c'est l'année
-                                if re.match(r"^(19|20)\d{2}$", text):
+                            for text in all_texts:
+                                # Année (si pas déjà trouvée dans le titre)
+                                if annee == "N/C" and re.match(r"^(19|20)\d{2}$", text):
                                     annee = text
-                                # Si contient 'km', 'Diesel', 'Essence', 'Manuel', 'Auto'
-                                elif any(x in text.lower() for x in ['km', 'diesel', 'essence', 'manuel', 'auto']):
-                                    if text not in autres: autres.append(text)
-                                # Sinon, par élimination, c'est la ville (si ce n'est pas le prix)
-                                elif "DH" not in text and "/" not in text and len(text) > 2:
-                                    ville = text
+                                # Mots clés techniques
+                                elif any(x in text.lower() for x in ['km', 'diesel', 'essence', 'manuel', 'auto', 'cv']):
+                                    if text not in autres and "DH" not in text:
+                                        autres.append(text)
+                                # Ville (souvent un texte simple sans chiffres)
+                                elif not any(char.isdigit() for char in text) and len(text) > 3:
+                                    if text.lower() not in ["plus d'infos", "voir l'annonce"]:
+                                        ville = text
 
                             if any(char.isdigit() for char in price):
                                 page_data.append({
-                                    "name": name,
+                                    "name": name[:30],
                                     "price": price,
                                     "ville": ville,
                                     "annee": annee,
