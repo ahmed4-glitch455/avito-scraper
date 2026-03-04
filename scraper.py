@@ -13,7 +13,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_API")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # On définit l'URL avec le filtre de prix directement
-BASE_URL = "https://www.avito.ma/fr/maroc/voitures_d_occasion-%C3%A0_vendre?price=-60000"
+BASE_URL = "https://www.avito.ma/fr/maroc/voitures_d_occasion-%C3%A0_vendre?price=-100000"
 MAX_PAGES = 30 
 
 def format_price(price_str):
@@ -31,7 +31,7 @@ def extract_year_from_text(text):
 def send_telegram_page(data, page_number):
     if not data: return
     date_str = datetime.datetime.now().strftime("%H:%M")
-    msg = f"💰 *BUDGET < 60.000 DH - PAGE {page_number}/{MAX_PAGES}* 💰\n"
+    msg = f"💰 *BUDGET < 100.000 DH - PAGE {page_number}/{MAX_PAGES}* 💰\n"
     msg += f"🕒 {date_str}\n"
     msg += "=" * 25 + "\n\n"
     
