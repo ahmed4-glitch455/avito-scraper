@@ -9,9 +9,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_API")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BASE_URL = "https://www.avito.ma/fr/maroc/voitures_d_occasion-%C3%A0_vendre"
+# On définit l'URL avec le filtre de prix directement
+BASE_URL = "https://www.avito.ma/fr/maroc/voitures_d_occasion-%C3%A0_vendre?price=-60000"
 MAX_PAGES = 30 
 
 def format_price(price_str):
@@ -29,7 +31,7 @@ def extract_year_from_text(text):
 def send_telegram_page(data, page_number):
     if not data: return
     date_str = datetime.datetime.now().strftime("%H:%M")
-    msg = f"✨ *SÉLECTION AVITO - PAGE {page_number}/{MAX_PAGES}* ✨\n"
+    msg = f"💰 *BUDGET < 60.000 DH - PAGE {page_number}/{MAX_PAGES}* 💰\n"
     msg += f"🕒 {date_str}\n"
     msg += "=" * 25 + "\n\n"
     
@@ -52,17 +54,22 @@ async def scrape_avito():
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
         for i in range(1, MAX_PAGES + 1):
-            url = BASE_URL if i == 1 else f"{BASE_URL}?o={i}"
+            # Construction intelligente de l'URL pour gérer le filtre de prix sur toutes les pages
+            if i == 1:
+                url = BASE_URL
+            else:
+                # On insère le paramètre de page 'o=i' avant le filtre de prix
+                url = BASE_URL.replace("?", f"?o={i}&")
+            
             page = await context.new_page()
             page_data = []
 
             try:
-                print(f"Analyse Page {i}...")
+                print(f"Analyse Page {i} (Budget < 60k)...")
                 await page.goto(url, wait_until="load", timeout=60000)
                 
-                # Scroll plus lent et plus long pour forcer l'affichage de la ville
-                for _ in range(6):
-                    await page.mouse.wheel(0, 800)
+                for _ in range(5):
+                    await page.mouse.wheel(0, 900)
                     await asyncio.sleep(1)
 
                 content = await page.content()
@@ -81,37 +88,31 @@ async def scrape_avito():
                             name = title_tag.get_text(strip=True)
                             price = format_price(price_tag.get_text(strip=True))
                             
-                            # On récupère TOUS les textes dans l'annonce
-                            badges = ad.find_all(['span', 'p'])
-                            all_texts = [b.get_text(strip=True) for b in badges if b.get_text(strip=True)]
+                            badges = ad.find_all(['span', 'p'], class_='dGUnYf')
                             
-                            ville = "Maroc" # Valeur par défaut plus propre que "Non spécifiée"
+                            ville = "Maroc"
                             annee = extract_year_from_text(name) or "N/C"
                             autres = []
-                            candidates_ville = []
+                            candidats_ville = []
 
-                            for text in all_texts:
-                                lower_text = text.lower()
+                            for b in badges:
+                                text = b.get_text(strip=True, separator=' ')
+                                text = re.sub(r'(Downward|Upward|Arrow|Icon|Camera|Location|Pin|Map)\s?\w*', '', text).strip()
                                 
-                                # Ignorer les prix et crédits
-                                if "dh" in lower_text or "/mois" in lower_text:
+                                lower_text = text.lower()
+                                if not text or "dh" in lower_text or "/mois" in lower_text:
                                     continue
                                 
-                                # Détecter l'année
                                 if re.match(r"^(19|20)\d{2}$", text):
                                     annee = text
-                                # Détecter les infos techniques
                                 elif any(x in lower_text for x in ['km', 'diesel', 'essence', 'manuel', 'auto', 'cv']):
-                                    if text not in autres: 
-                                        autres.append(text)
-                                # Collecter les candidats pour la ville (Texte pur sans chiffres)
+                                    if text not in autres: autres.append(text)
                                 elif len(text) > 2 and not any(char.isdigit() for char in text):
-                                    if lower_text not in ["plus d'infos", "voir l'annonce", "neuf"]:
-                                        candidates_ville.append(text)
+                                    if lower_text not in ["neuf", "plus d'infos", "voir l'annonce"]:
+                                        candidats_ville.append(text)
 
-                            # La ville est très souvent le DERNIER élément de texte pur dans l'annonce
-                            if candidates_ville:
-                                ville = candidates_ville[-1]
+                            if candidats_ville:
+                                ville = candidats_ville[-1]
 
                             if any(char.isdigit() for char in price):
                                 page_data.append({
@@ -126,7 +127,7 @@ async def scrape_avito():
                 if page_data:
                     unique = list({v['url']:v for v in page_data}.values())
                     send_telegram_page(unique, i)
-                    print(f"✅ Page {i} envoyée.")
+                    print(f"✅ Page {i} terminée.")
 
             except Exception as e:
                 print(f"Erreur Page {i}: {e}")
