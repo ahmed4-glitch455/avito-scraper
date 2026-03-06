@@ -40,7 +40,7 @@ def extract_year_from_text(text):
 def send_telegram_page(data, page_number):
     if not data: return
     date_str = datetime.datetime.now().strftime("%H:%M")
-    msg = f"✨ *SÉLECTION AVITO (<60k) - PAGE {page_number}/{MAX_PAGES}* ✨\n"
+    msg = f"✨ *SÉLECTION AVITO (<40k) - PAGE {page_number}/{MAX_PAGES}* ✨\n"
     msg += f"🕒 {date_str}\n"
     msg += "=" * 25 + "\n\n"
     
