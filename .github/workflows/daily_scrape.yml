@@ -24,6 +24,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         playwright install chromium
+        pip install playwright beautifulsoup4 python-dotenv httpx  # <- AJOUTE HTTPX ICI
 
     - name: Exécuter le scraper
       env:
