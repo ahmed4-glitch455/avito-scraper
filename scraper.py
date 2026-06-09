@@ -14,7 +14,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_API")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BASE_URL = "https://www.avito.ma/fr/maroc/voitures_d_occasion-%C3%A0_vendre?brand=17&model=palio,siena&brand_model=17_palio,17_siena&price=-40000"
-MAX_PAGES = 30 
+MAX_PAGES = 10 
 
 def format_price(price_str):
     digits = "".join([c for c in price_str if c.isdigit()])
